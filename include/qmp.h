@@ -47,7 +47,8 @@ enum class QMPInputEventType {
     KeyRelease,
     MouseButtonPress,
     MouseButtonRelease,
-    MouseMove
+    MouseMove,
+    MouseMoveAbs         // move.x/move.y: fraction of the screen, < 0 keeps the axis
 };
 
 struct QMPInputEvent {

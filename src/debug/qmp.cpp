@@ -643,6 +643,9 @@ void QMPServer::process_pending_input_events() {
             case QMPInputEventType::MouseMove:
                 Mouse_CursorMoved(event.move.x, event.move.y, 0, 0, true);
                 break;
+            case QMPInputEventType::MouseMoveAbs:
+                Mouse_SetPositionFraction(event.move.x, event.move.y);
+                break;
         }
 
         events_to_process.pop();
@@ -706,6 +709,8 @@ void QMPServer::handle_input_send_event(const std::string& cmd) {
 
     // Accumulate relative mouse movements to send as a single event
     float mouse_xrel = 0, mouse_yrel = 0;
+    float mouse_xabs = -1, mouse_yabs = -1;  // QEMU "abs": 0..32767 -> 0..1
+    bool has_mouse_abs = false;
     bool has_mouse_move = false;
 
     for (const auto& event_json : events) {
@@ -758,6 +763,18 @@ void QMPServer::handle_input_send_event(const std::string& cmd) {
                 mouse_yrel += static_cast<float>(value);
                 has_mouse_move = true;
             }
+        } else if (type == "abs") {
+            // Absolute position, QEMU convention: 0..32767 across the screen
+            std::string axis = extract_string(data_str, "axis");
+            int value = extract_int(data_str, "value", 0);
+            float frac = static_cast<float>(value < 0 ? 0 : (value > 32767 ? 32767 : value)) / 32767.0f;
+            if (axis == "x") {
+                mouse_xabs = frac;
+                has_mouse_abs = true;
+            } else if (axis == "y") {
+                mouse_yabs = frac;
+                has_mouse_abs = true;
+            }
         } else if (type == "btn") {
             // Mouse button event
             std::string button = extract_string(data_str, "button");
@@ -780,6 +797,15 @@ void QMPServer::handle_input_send_event(const std::string& cmd) {
             input_event.button = btn_id;
             queue_input_event(input_event);
         }
+    }
+
+    // An absolute position first, then any relative motion on top of it
+    if (has_mouse_abs) {
+        QMPInputEvent input_event;
+        input_event.type = QMPInputEventType::MouseMoveAbs;
+        input_event.move.x = mouse_xabs;
+        input_event.move.y = mouse_yabs;
+        queue_input_event(input_event);
     }
 
     // Queue accumulated mouse movement as a single event

@@ -986,6 +986,21 @@ void Mouse_CursorMoved(float xrel,float yrel,float x,float y,bool emulate) {
     Mouse_AddEvent(MOUSE_HAS_MOVED);
 }
 
+/* Absolute positioning for remote control (QMP input-send-event "abs"):
+ * fx/fy are fractions of the screen (0..1), mapped onto the INT 33h
+ * coordinates of the current mode (max_screen_x/y, e.g. 0..639 in mode
+ * 13h) and clamped to the program's limits.  A negative value keeps that
+ * axis.  Set directly: Mouse_CursorMoved would re-read the host cursor. */
+void Mouse_SetPositionFraction(float fx, float fy) {
+    if (fx >= 0.0f) mouse.x = fx * (float)mouse.max_screen_x;
+    if (fy >= 0.0f) mouse.y = fy * (float)mouse.max_screen_y;
+    if (mouse.x < mouse.min_x) mouse.x = mouse.min_x;
+    if (mouse.y < mouse.min_y) mouse.y = mouse.min_y;
+    if (mouse.x > mouse.max_x) mouse.x = mouse.max_x;
+    if (mouse.y > mouse.max_y) mouse.y = mouse.max_y;
+    Mouse_AddEvent(MOUSE_HAS_MOVED);
+}
+
 uint8_t Mouse_GetButtonState(void) {
     return mouse.buttons;
 }
