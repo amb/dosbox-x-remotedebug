@@ -99,12 +99,24 @@ void GDBServer::setup_socket() {
         return;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-        LOG(LOG_REMOTE, LOG_ERROR)("GDBServer: setsockopt failed: %s", strerror(errno));
+    /* NOTE(local patch): SO_REUSEADDR|SO_REUSEPORT ORs option *values*, which
+     * is only a valid option number on Linux by coincidence. On macOS
+     * (SO_REUSEADDR=0x4, SO_REUSEPORT=0x200) it yields ENOPROTOOPT and the
+     * server never starts. Set the two options separately. */
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        LOG(LOG_REMOTE, LOG_ERROR)("GDBServer: setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
         close(server_fd);
         server_fd = -1;
         return;
     }
+#ifdef SO_REUSEPORT
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        LOG(LOG_REMOTE, LOG_ERROR)("GDBServer: setsockopt(SO_REUSEPORT) failed: %s", strerror(errno));
+        close(server_fd);
+        server_fd = -1;
+        return;
+    }
+#endif
 
     // Set non-blocking
     int flags = fcntl(server_fd, F_GETFL, 0);

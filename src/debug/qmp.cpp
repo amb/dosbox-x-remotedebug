@@ -24,6 +24,7 @@
 #include <thread>
 #include <chrono>
 #include <cstring>
+#include <cerrno>
 #include <netinet/tcp.h>
 #include <algorithm>
 #include <fstream>
@@ -383,10 +384,18 @@ void QMPServer::setup_socket() {
         return;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        LOG(LOG_REMOTE, LOG_ERROR)("QMP: setsockopt failed");
+    /* NOTE(local patch): see gdbserver.cpp -- ORing the two option *values*
+     * only works on Linux by coincidence and fails on macOS with ENOPROTOOPT. */
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        LOG(LOG_REMOTE, LOG_ERROR)("QMP: setsockopt(SO_REUSEADDR) failed");
         return;
     }
+#ifdef SO_REUSEPORT
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt))) {
+        LOG(LOG_REMOTE, LOG_ERROR)("QMP: setsockopt(SO_REUSEPORT) failed");
+        return;
+    }
+#endif
 
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -416,7 +425,9 @@ void QMPServer::wait_for_client() {
 
     client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen);
     if (client_fd < 0) {
-        if (running.load()) {
+        /* NOTE(local patch): the listening socket is non-blocking, so EAGAIN
+         * here just means "no client yet" and must not be logged every tick. */
+        if (running.load() && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             LOG(LOG_REMOTE, LOG_ERROR)("QMP: accept failed");
         }
         return;
