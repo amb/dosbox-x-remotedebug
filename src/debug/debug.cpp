@@ -836,11 +836,17 @@ void CBreakpoint::ActivateBreakpointsExceptAt(PhysPt adr)
  * immediately with ActivateBreakpoints() and re-trapped forever). */
 int CBreakpoint::DeactivateBreakpointsAt(PhysPt adr)
 {
+	/* Counts every physical breakpoint at adr, armed or not: one inserted at
+	 * the current PC while halted is not armed yet (arming happens on resume,
+	 * which skips the PC), and it still has to be re-armed once the PC moves.
+	 * Counting only armed ones left such a breakpoint disarmed forever -- e.g.
+	 * the tick breakpoint set right after loading a savestate taken on it. */
 	int n = 0;
 	for (std::list<CBreakpoint*>::iterator i = BPoints.begin(); i != BPoints.end(); ++i) {
 		CBreakpoint* bp = (*i);
-		if (bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr && bp->IsActive()) {
-			bp->Activate(false);
+		if (bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr) {
+			if (bp->IsActive())
+				bp->Activate(false);
 			n++;
 		}
 	}
