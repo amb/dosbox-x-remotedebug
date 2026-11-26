@@ -17,6 +17,7 @@
  */
 
 #include <assert.h>
+#include <mutex>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -73,6 +74,9 @@ bool video_debug_overlay = false;
 bool skip_encoding_unchanged_frames = false, show_recorded_filename = true;
 std::string pathvid = "", pathwav = "", pathmtw = "", pathmid = "", pathopl = "", pathscr = "", pathprt = "", pathpcap = "";
 static std::string last_screenshot_path = "";  // Persists after pathscr is cleared, for remote debugging
+/* Written on the emulation thread when a screenshot is saved, read and
+ * cleared from the QMP thread: guard it. */
+static std::mutex last_screenshot_path_mutex;
 bool systemmessagebox(char const * aTitle, char const * aMessage, char const * aDialogType, char const * aIconType, int aDefaultButton);
 extern std::string working_dir;
 
@@ -989,7 +993,10 @@ void CAPTURE_AddImage(Bitu width, Bitu height, Bitu bpp, Bitu pitch, Bitu flags,
 		if (show_recorded_filename && pathscr.size()) systemmessagebox("Recording completed",("Saved screenshot to the file:\n\n"+pathscr).c_str(),"ok", "info", 1);
 
 		// Save path for remote debugging before clearing
-		if (pathscr.size()) last_screenshot_path = pathscr;
+		if (pathscr.size()) {
+			std::lock_guard<std::mutex> lock(last_screenshot_path_mutex);
+			last_screenshot_path = pathscr;
+		}
 	}
 	pathscr = "";
 skip_shot:
@@ -1672,12 +1679,14 @@ bool CAPTURE_IsScreenshotPending() {
 }
 
 std::string CAPTURE_GetLastScreenshotPath() {
+	std::lock_guard<std::mutex> lock(last_screenshot_path_mutex);
 	std::string result = last_screenshot_path;
 	last_screenshot_path.clear();  // Clear after reading so subsequent calls don't return stale path
 	return result;
 }
 
 void CAPTURE_ClearLastScreenshotPath() {
+	std::lock_guard<std::mutex> lock(last_screenshot_path_mutex);
 	last_screenshot_path.clear();
 }
 

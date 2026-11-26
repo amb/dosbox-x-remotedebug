@@ -951,11 +951,15 @@ void QMPServer::handle_screendump(const std::string& cmd) {
         return;
     }
 
-    // Give a little extra time for the path to be set
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // Get the screenshot path
-    std::string screenshot_path = CAPTURE_GetLastScreenshotPath();
+    /* The pending flag is cleared when writing the PNG *starts* and the path
+     * is recorded when it ends, so wait for the path itself: a fixed short
+     * sleep reported "no file created" for screenshots that were written. */
+    std::string screenshot_path;
+    for (int waited_path = 0; waited_path < 2000; waited_path += 10) {
+        screenshot_path = CAPTURE_GetLastScreenshotPath();
+        if (!screenshot_path.empty()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     if (screenshot_path.empty()) {
         send_error("GenericError", "Screenshot capture failed - no file created");
         return;
