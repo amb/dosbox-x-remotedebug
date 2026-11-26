@@ -60,6 +60,9 @@ void DEBUG_CloseDebugger();  // Close debugger UI and resume execution
 // Called by main loop to check and handle GDB step/continue requests
 // Returns true if a step was executed (caller should return from loop)
 bool DEBUG_CheckGDBStep();
+// True if a GDB `continue` arrived while the emulator was paused; consumes it.
+bool DEBUG_GDBTakeResumeRequest();
+void DEBUG_GDBClearResumeRequest();
 
 // Unified debug state queries for QMP/external tools
 bool DEBUG_IsDebuggerActive();   // Returns true if debugger (interactive or GDB) is active

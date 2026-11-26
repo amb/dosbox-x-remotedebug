@@ -193,6 +193,13 @@ static void LogBIOSMem(void);
 static GDBServer* gdbServer = nullptr;
 static bool gdb_break_on_exec = false;  // Flag for GDB-aware program execution
 static bool gdb_cpu_paused = false;     // CPU paused waiting for GDB command
+/* Set when a breakpoint is disarmed so the instruction under it can execute
+ * (the stub has no internal step-over); everything is re-armed once PC moves. */
+static bool gdb_reactivate_pending = false;
+static PhysPt gdb_reactivate_at = 0;
+/* A GDB `continue` arrived while the emulator was paused (QMP or user pause).
+ * PauseDOSBoxLoop consumes this to leave the pause loop. */
+static bool gdb_resume_requested = false;
 #endif
 
 extern int debuggerrun;
@@ -673,6 +680,7 @@ public:
 	static void				DeactivateBreakpoints();
 	static void				ActivateBreakpoints	();
 	static void				ActivateBreakpointsExceptAt(PhysPt adr);
+	static int				DeactivateBreakpointsAt(PhysPt adr);
 	static bool				CheckBreakpoint		(uint16_t seg, uint32_t off);
 	static bool				CheckIntBreakpoint	(PhysPt adr, uint8_t intNr, uint16_t ahValue, uint16_t alValue);
 	static CBreakpoint*		FindPhysBreakpoint	(uint16_t seg, uint32_t off, bool once);
@@ -815,6 +823,28 @@ void CBreakpoint::ActivateBreakpointsExceptAt(PhysPt adr)
 			continue;
 		bp->Activate(true);
 	}
+}
+
+/* Remove the 0xCC at adr, restoring the original opcode, and mark those
+ * breakpoints inactive. Returns how many were deactivated.
+ *
+ * ActivateBreakpointsExceptAt() is not enough for this: it skips the breakpoint
+ * at adr, which leaves the INT3 patched in, so the next instruction executed at
+ * that address traps again. A debugger that continues from a breakpoint has to
+ * actually disarm it, run the instruction, then re-arm -- that is what the GDB
+ * stub does with DEBUG_GDB_ReactivateAt below (it previously re-armed
+ * immediately with ActivateBreakpoints() and re-trapped forever). */
+int CBreakpoint::DeactivateBreakpointsAt(PhysPt adr)
+{
+	int n = 0;
+	for (std::list<CBreakpoint*>::iterator i = BPoints.begin(); i != BPoints.end(); ++i) {
+		CBreakpoint* bp = (*i);
+		if (bp->GetType() == BKPNT_PHYSICAL && bp->GetLocation() == adr && bp->IsActive()) {
+			bp->Activate(false);
+			n++;
+		}
+	}
+	return n;
 }
 
 bool CBreakpoint::CheckBreakpoint(uint16_t seg, uint32_t off)
@@ -6807,10 +6837,32 @@ uint32_t DEBUG_GetRegister(int reg) {
  // Called by the main loop to check and handle GDB commands.
  // Polls the GDB server (non-blocking) and processes any received commands.
  // Returns true if CPU should be paused (caller should return from loop iteration).
+/* Re-arm breakpoints that were disarmed for a step-over, once the PC has left
+  * the instruction we disarmed.  Safe to call every loop iteration. */
+ static void DEBUG_GDB_ReactivateStaleBreakpoints() {
+     if (!gdb_reactivate_pending) return;
+     if ((SegPhys(cs) + reg_eip) == gdb_reactivate_at) return;
+     CBreakpoint::ActivateBreakpoints();
+     gdb_reactivate_pending = false;
+     gdb_reactivate_at = 0;
+ }
+
+ bool DEBUG_GDBTakeResumeRequest() {
+     const bool r = gdb_resume_requested;
+     gdb_resume_requested = false;
+     return r;
+ }
+
+ void DEBUG_GDBClearResumeRequest() {
+     gdb_resume_requested = false;
+ }
+
  bool DEBUG_CheckGDBStep() {
     if (gdbServer == nullptr || !gdbServer->is_running()) {
         return false;
     }
+
+    DEBUG_GDB_ReactivateStaleBreakpoints();
 
     // Poll for incoming GDB commands (non-blocking)
     GDBAction action = gdbServer->poll();
@@ -6831,6 +6883,8 @@ uint32_t DEBUG_GetRegister(int reg) {
             DEBUG_Run(1, true);
             mustCompleteInstruction = false;
 
+            DEBUG_GDB_ReactivateStaleBreakpoints();
+
             uint32_t eip_after = DEBUG_GetRegister(8);
             LOG(LOG_REMOTE, LOG_NORMAL)("DEBUG: Step completed, EIP=0x%X->0x%X", eip_before, eip_after);
 
@@ -6840,11 +6894,24 @@ uint32_t DEBUG_GetRegister(int reg) {
             return true;  // CPU should pause
         }
 
-        case GDBAction::CONTINUE:
+        case GDBAction::CONTINUE: {
             LOG(LOG_REMOTE, LOG_DEBUG)("DEBUG: GDB continue request");
-            CBreakpoint::ActivateBreakpoints();
+            /* Continuing from a breakpoint must NOT re-arm the INT3 at the
+             * current PC: the stub has no internal step-over, so the very same
+             * instruction traps again before it runs.  Symptom: `cont` never
+             * advances, and every stop reports an identical PC and tick.
+             * Disarm it here and let DEBUG_GDB_ReactivateStaleBreakpoints()
+             * re-arm once the PC has moved on. */
+            const PhysPt pc = SegPhys(cs) + reg_eip;
+            if (CBreakpoint::DeactivateBreakpointsAt(pc) > 0) {
+                gdb_reactivate_pending = true;
+                gdb_reactivate_at = pc;
+            }
+            CBreakpoint::ActivateBreakpointsExceptAt(pc);
+            gdb_resume_requested = true;
             gdb_cpu_paused = false;
             return false;  // Continue normal execution
+        }
 
         case GDBAction::STOP:
             LOG(LOG_REMOTE, LOG_NORMAL)("DEBUG: GDB stop request");
