@@ -1710,12 +1710,35 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
 #if defined(WIN32)
     DOSBox_SetSysMenu();
 #endif
+#if C_REMOTEDEBUG
+    /* A `continue` from a previous pause is stale. */
+    DEBUG_GDBClearResumeRequest();
+#endif
 
     while (paused) {
         if (unpause_now) {
             unpause_now = false;
             break;
         }
+
+#if C_REMOTEDEBUG
+        /* Service the GDB stub while paused.  This must live here, not in one
+         * of the platform branches below: this build defines C_GAMELINK, so the
+         * wait section takes a different branch than the #else, and a poll
+         * placed there never runs.  Before this, a client attached to a paused
+         * guest (QMP `stop`, or the pause key) connected but never got a reply,
+         * because the main loop -- the only other caller -- is not iterating
+         * while the pause loop owns the CPU.
+         *
+         * Every iteration, not just on timeout: with the dummy video driver
+         * SDL can return events continuously. */
+        DEBUG_CheckGDBStep();
+        if (DEBUG_GDBTakeResumeRequest()) {
+            is_paused = false;
+            GFX_SetTitle(-1, -1, -1, false);
+            return;
+        }
+#endif
 
 #if C_EMSCRIPTEN
         emscripten_sleep(0);
@@ -1726,7 +1749,11 @@ void PauseDOSBoxLoop(Bitu /*unused*/) {
         OUTPUT_GAMELINK_Transfer();
         SDL_PollEvent(&event);
 #else
+#if C_REMOTEDEBUG
+        if (!SDL_WaitEventTimeout(&event, 20)) continue;
+#else
         SDL_WaitEvent(&event);    // since we're not polling, cpu usage drops to 0.
+#endif
 #endif
 
 #if defined(WIN32) && !defined(HX_DOS)
